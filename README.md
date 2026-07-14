@@ -1,315 +1,188 @@
-[![Discord](https://img.shields.io/badge/Join%20Our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/8BxYbV4pkj)
-[![Latest Build](https://img.shields.io/github/actions/workflow/status/TheNetsky/Microsoft-Rewards-Script/auto-release.yml?branch=v4&style=for-the-badge&label=Latest%20Build)](https://github.com/TheNetsky/Microsoft-Rewards-Script/actions/workflows/auto-release.yml)
-[![Docker](https://img.shields.io/badge/Docker-GHCR-blue?style=for-the-badge&logo=docker)](https://github.com/TheNetsky/Microsoft-Rewards-Script/pkgs/container/microsoft-rewards-script)
+# Microsoft Rewards 自动赚分脚本
 
-> [!TIP]
-> This version supports the **new, modern Bing Rewards dashboard only** - it does **not** support the legacy dashboard.
-> If your account still uses the old dashboard, use the [v3 branch](https://github.com/TheNetsky/Microsoft-Rewards-Script/tree/v3) and v3.x releases instead!
+> 本仓库 `README.md` 为 **fork 维护者中文版**。英文原版请参考上游：
+> [hex-ci/Microsoft-Rewards-Script](https://github.com/hex-ci/Microsoft-Rewards-Script#readme)
 >
-> Use at your own risk - some features may not work as expected.
+> 本版本仅增强中文文档与国内构建加速，**运行逻辑与上游 v4 保持一致**。
 
 ---
 
-## Table of Contents
+## 目录
 
-- [Table of Contents](#table-of-contents)
-- [Quick Setup](#quick-setup)
-    - [Bare metal](#bare-metal)
-        - [Get the script](#get-the-script)
-- [Account Setup](#account-setup)
-- [Config Setup](#config-setup)
-    - [Build and run the script (bare metal version)](#build-and-run-the-script-bare-metal-version)
-- [Docker](#docker)
-- [Nix Setup](#nix-setup)
-- [Configuration Options](#configuration-options)
-    - [Core](#core)
-    - [Workers](#workers)
-    - [Activities](#activities)
-    - [Search Settings](#search-settings)
-        - [Query sources](#query-sources)
-    - [Experimental](#experimental)
-    - [Logging](#logging)
-    - [Proxy](#proxy)
-    - [Webhooks](#webhooks)
-- [Troubleshooting](#troubleshooting)
-- [Disclaimer](#disclaimer)
+- [本 fork 改了什么](#1-本-fork-改了什么)
+- [环境要求](#2-环境要求)
+- [部署步骤](#3-部署步骤)
+- [手动触发一次运行（测试登录）](#4-手动触发一次运行测试登录)
+- [两步验证（2FA）配置](#5-两步验证2fa配置)
+- [守护与「服务器重启后自动运行」](#6-守护与服务器重启后自动运行)
+- [常见问题 / 踩坑记录](#7-常见问题--踩坑记录)
+- [从上游同步更新](#8-从上游同步更新)
+- [配置选项速查](#9-配置选项速查)
 
 ---
 
-## Quick Setup
+## 1. 本 fork 改了什么
 
-### Bare metal
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| 国内构建加速 | `Dockerfile` | 切换清华 apt 镜像 + npmmirror 二进制镜像，解决官方源在国内极慢（实测约 200KB/s，完整构建 1 小时以上）的问题 |
+| 中文文档 | `README.md`（本文件） | 面向中文 / 国内用户的部署与排障指南，默认显示 |
 
-**Requirements:** Node.js >= 24 and Git  
-Works on Windows, Linux, macOS, and WSL.
+> 上游 `compose.yaml` 的 healthcheck 为 `pgrep cron > /dev/null || exit 1`（**正确写法**，cron 在跑即 healthy）。
+> 早期版本曾出现过 `; exit 1`（永远 unhealthy）的 bug，本 fork 已无此问题。若从其他旧源部署遇到 `unhealthy`，
+> 请把该处改为 `|| exit 1`。
 
-#### Get the script
+---
+
+## 2. 环境要求
+
+- 一台 Linux 服务器（已验证：腾讯云 Ubuntu，2C2G 可用）
+- 已安装 Docker 与 Docker Compose（Compose v2，`docker compose` 命令）
+- Microsoft 账户（邮箱 + 密码；若开启两步验证 2FA，需配置 TOTP，见第 5 节）
+
+---
+
+## 3. 部署步骤
+
+### 3.1 准备项目与凭证
 
 ```bash
-git clone https://github.com/TheNetsky/Microsoft-Rewards-Script.git
+git clone https://github.com/maojunzc/Microsoft-Rewards-Script.git
 cd Microsoft-Rewards-Script
+
+# 复制环境变量模板并填写账户
+cp env.example .env
 ```
 
-Or, download the latest release ZIP and extract it.
-
-## Account Setup
-
-- Copy and rename [`env.example`](env.example) to `.env` and add your account credentials:
+编辑 `.env`，至少填写：
 
 ```env
-ACCOUNT_1_EMAIL=email@example.com
-ACCOUNT_1_PASSWORD=your_password
+ACCOUNT_1_EMAIL=你的邮箱@163.com
+ACCOUNT_1_PASSWORD=你的密码
+# 若开启了两步验证，取消下一行注释并填入认证器密钥（Base32）
+# ACCOUNT_1_TOTP_SECRET=XXXXXXXXXXXXXXXX
 ```
 
-> [!NOTE]
-> Add one `ACCOUNT_N_*` block per account, numbered from 1 with no gaps — the script stops at the first missing `ACCOUNT_N_EMAIL`. Optional per-account fields cover recovery email, locale (`ACCOUNT_N_GEO_LOCALE` defaults to `auto`, the locale of your Microsoft profile), language, proxy, and fingerprint persistence — see [`env.example`](env.example) for all of them.
+### 3.2 调整定时与区域（中国用户重点）
 
-> [!TIP]
-> For 2FA accounts, set `ACCOUNT_N_TOTP_SECRET` and the script will generate and enter the 6-digit code automatically. To get the secret: in your Microsoft Security settings open 'Manage how you sign in', add an Authenticator app, and when the QR code appears choose 'enter code manually' — use that code as the value in your `.env`.
+编辑 `compose.yaml` 的 `environment` 段：
 
-> [!WARNING]
-> You must rebuild your script after making any changes to the `.env`.
+```yaml
+environment:
+    TZ: 'Asia/Shanghai'            # 改成中国时区，cron 才会按北京时间触发
+    CRON_SCHEDULE: '0 9 * * *'     # 每天北京时间 09:00 自动运行
+    RUN_ON_START: 'false'          # true=容器启动立刻跑一次；false=仅按 cron 跑
+    SKIP_RANDOM_SLEEP: 'false'     # false=运行前随机等待 5~50 分钟（避免同一秒集中请求）
+```
 
-## Config Setup
+> `RUN_ON_START: 'true'` 时容器启动会立刻执行一次；日常建议设为 `false`，交给 cron 每天定时跑。
 
-> [!WARNING]
-> Do **not** skip this step if you are running the script bare metal.
-
-- **Bare metal:** Copy or rename `config.example.json` to `config.json` (in the project root) and customize your preferences.
-- **Docker:** A valid `config.json` is automatically created on first run and saved locally to `./config/`. You can optionally manually create a `config.json` (e.g., if you need to specify regex values) using the provided `config.example.json`
-
-> [!CAUTION]
-> Prior versions of accounts.json and config.json are not compatible with current release.
-
-### Build and run the script (bare metal version)
+### 3.3 构建并启动
 
 ```bash
-npm run pre-build
-npm run build
-npm run start
+# 本地构建镜像（已加国内源加速）
+docker compose up -d --build
+
+# 若直接用上游预构建镜像（不走本地构建），把 compose.yaml 顶部的
+# image: 行取消注释、注释掉 build: 段即可
 ```
 
-## Docker
+首次构建会下载 Node 基础镜像、npm 依赖、Chromium（约 114MB）及系统依赖，
+**有国内源后通常为几分钟到十几分钟**；无国内源时可能超过 1 小时。
 
-- Copy the sample [`compose.yaml`](compose.yaml)
-- Copy and rename [`env.example`](env.example) to `.env` and add your account credentials:
+### 3.4 验证
 
-```env
-ACCOUNT_1_EMAIL=email@example.com
-ACCOUNT_1_PASSWORD=your_password
+```bash
+docker ps --filter name=microsoft-rewards-script   # 状态应为 Up ... (healthy)
+docker logs -f microsoft-rewards-script            # 应看到 cron 调度已启动
 ```
 
-- Review `compose.yaml` to adjust scheduling, timezone, and config options.
-
-> [!NOTE]
-> A valid `config.json` is auto-generated on first run using default values, and saved locally to `./config/`.
-> Optionally, use `CONFIG_*` variables in the `environment:` section of the `compose.yaml` to customise your options (e.g., clusters, webhook, etc.).
-> A full list of available options are in the [table below](#configuration-options).
-> `CONFIG_*` variables are applied on every startup and always take precedence over `./config/config.json`.
-
-> [!TIP]
-> If a new image adds config options you're missing, a warning will appear in the container logs.
-> To update, delete `./config/config.json` and restart — a fresh one will be generated from the latest example, with your `compose.yaml` overrides re-applied.
-
-- Start the container: `docker compose up -d`
-
-> [!TIP]
-> Monitor logs with `docker logs microsoft-rewards-script`, useful for viewing passwordless login codes or diagnosing issues.
-> You can also enable a webhook in `compose.yaml` for notifications.
-
 ---
 
-## Nix Setup
+## 4. 手动触发一次运行（测试登录）
 
-If using Nix: `bash scripts/nix/run.sh`
+不推荐用 `docker compose run`（会与常驻容器冲突）。直接在常驻容器内执行：
 
----
-
-## Configuration Options
-
-Edit `config.json` to customize behavior, or set `CONFIG_*` environment variables in `compose.yaml` (Docker). Below are all currently available options.
-
-> [!WARNING]
-> Rebuild the script (bare metal), or recreate the container (Docker) after all config changes.
-
-### Core
-
-| Setting                     | Type    | Default      | Description                                | Docker environment variable           |
-| --------------------------- | ------- | ------------ | ------------------------------------------ | ------------------------------------- |
-| `sessionPath`               | string  | `"sessions"` | Directory to store browser sessions        |                                       |
-| `headless`                  | boolean | `false`      | Run browser invisibly                      | Always `true` in Docker               |
-| `clusters`                  | number  | `1`          | Number of concurrent account clusters      | `CONFIG_CLUSTERS`                     |
-| `errorDiagnostics`          | boolean | `false`      | Enable error diagnostics                   | `CONFIG_ERROR_DIAGNOSTICS`            |
-| `ensureStreakProtection`    | boolean | `true`       | Ensure streak protection is enabled        | `CONFIG_ENSURE_STREAK_PROTECTION`     |
-| `autoClaimPunchcardRewards` | boolean | `false`      | Auto-claim completed punchcard rewards     | `CONFIG_AUTO_CLAIM_PUNCHCARD_REWARDS` |
-| `skipNonPointTasks`         | boolean | `true`       | Skip tasks that award no points            | `CONFIG_SKIP_NON_POINT_TASKS`         |
-| `searchOnBingLocalQueries`  | boolean | `false`      | Use the local query list for ExploreOnBing | `CONFIG_SEARCH_ON_BING_LOCAL`         |
-| `globalTimeout`             | string  | `"30sec"`    | Timeout for all actions                    | `CONFIG_GLOBAL_TIMEOUT`               |
-
-### Workers
-
-| Setting                        | Type    | Default | Description                                                                | Docker environment variable          |
-| ------------------------------ | ------- | ------- | -------------------------------------------------------------------------- | ------------------------------------ |
-| `workers.doDailySet`           | boolean | `true`  | Complete daily set                                                         | `CONFIG_WORKER_DAILY_SET`            |
-| `workers.doClaimBonusPoints`   | boolean | `true`  | Claim bonus points                                                         | `CONFIG_WORKER_CLAIM_BONUS_POINTS`   |
-| `workers.doMorePromotions`     | boolean | `true`  | Complete "more activities"                                                 | `CONFIG_WORKER_MORE_PROMOTIONS`      |
-| `workers.doPunchCards`         | boolean | `true`  | Complete punchcards                                                        | `CONFIG_WORKER_PUNCH_CARDS`          |
-| `workers.doAppPromotions`      | boolean | `true`  | Complete app promotions                                                    | `CONFIG_WORKER_APP_PROMOTIONS`       |
-| `workers.doDesktopSearch`      | boolean | `true`  | Perform desktop searches                                                   | `CONFIG_WORKER_DESKTOP_SEARCH`       |
-| `workers.doMobileSearch`       | boolean | `true`  | Perform mobile searches                                                    | `CONFIG_WORKER_MOBILE_SEARCH`        |
-| `workers.doBonusSearches`      | boolean | `false` | Farm bonus searches beyond the cap                                         | `CONFIG_WORKER_BONUS_SEARCHES`       |
-| `workers.doDailyCheckIn`       | boolean | `true`  | Complete daily check-in                                                    | `CONFIG_WORKER_DAILY_CHECKIN`        |
-| `workers.doReadToEarn`         | boolean | `true`  | Complete Read-to-Earn                                                      | `CONFIG_WORKER_READ_TO_EARN`         |
-| `workers.doActivateSearchPerk` | boolean | `true`  | Activate the "search Nx more" perk when present (runs after the daily set) | `CONFIG_WORKER_ACTIVATE_SEARCH_PERK` |
-| `workers.doVisualSearch`       | boolean | `false` | Activate the visual-search streak and perform visual searches              | `CONFIG_WORKER_VISUAL_SEARCH`        |
-
-### Activities
-
-| Setting                   | Type    | Default | Description                    | Docker environment variable      |
-| ------------------------- | ------- | ------- | ------------------------------ | -------------------------------- |
-| `activities.urlReward`    | boolean | `true`  | Complete URL reward activities | `CONFIG_ACTIVITY_URL_REWARD`     |
-| `activities.searchOnBing` | boolean | `true`  | Complete ExploreOnBing offers  | `CONFIG_ACTIVITY_SEARCH_ON_BING` |
-
-### Search Settings
-
-| Setting                                | Type     | Default                             | Description                                               | Docker environment variable        |
-| -------------------------------------- | -------- | ----------------------------------- | --------------------------------------------------------- | ---------------------------------- |
-| `searchSettings.scrollRandomResults`   | boolean  | `false`                             | Scroll randomly on results                                | `CONFIG_SEARCH_SCROLL_RANDOM`      |
-| `searchSettings.clickRandomResults`    | boolean  | `false`                             | Click random links                                        | `CONFIG_SEARCH_CLICK_RANDOM`       |
-| `searchSettings.runOnZeroPoints`       | boolean  | `false`                             | Run searches even when no search points remain            | `CONFIG_SEARCH_RUN_ON_ZERO_POINTS` |
-| `searchSettings.maxBonusSearches`      | number   | `110`                               | Max bonus searches per run (when `doBonusSearches` is on) | `CONFIG_SEARCH_MAX_BONUS_SEARCHES` |
-| `searchSettings.parallelSearching`     | boolean  | `true`                              | Run searches in parallel                                  | `CONFIG_SEARCH_PARALLEL`           |
-| `searchSettings.queryEngines`          | string[] | see [Query sources](#query-sources) | Sources used to build the search query pool               | `CONFIG_SEARCH_QUERY_ENGINES` \*   |
-| `searchSettings.searchResultVisitTime` | string   | `"10sec"`                           | Time to spend on each search result                       | `CONFIG_SEARCH_VISIT_TIME`         |
-| `searchSettings.searchDelay.min`       | string   | `"30sec"`                           | Minimum delay between searches                            | `CONFIG_SEARCH_DELAY_MIN`          |
-| `searchSettings.searchDelay.max`       | string   | `"1min"`                            | Maximum delay between searches                            | `CONFIG_SEARCH_DELAY_MAX`          |
-| `searchSettings.readDelay.min`         | string   | `"30sec"`                           | Minimum delay for reading                                 | `CONFIG_SEARCH_READ_DELAY_MIN`     |
-| `searchSettings.readDelay.max`         | string   | `"1min"`                            | Maximum delay for reading                                 | `CONFIG_SEARCH_READ_DELAY_MAX`     |
-
-> [!NOTE]
-> \* Docker `CONFIG_*` array values are comma-separated strings e.g. `"error,warn"`. Regex patterns must be set directly in `config.json`.
-
-#### Query sources
-
-`searchSettings.queryEngines` controls where search queries come from. Pick any combination; topics from all selected sources are pooled, de-duplicated, and expanded with Bing autosuggest/related terms.
-
-Core sources:
-
-| Selector     | Source                                           |
-| ------------ | ------------------------------------------------ |
-| `google`     | Google Trends (trending searches)                |
-| `wikipedia`  | Wikipedia most-read articles (previous day)      |
-| `wikirandom` | Random Wikipedia articles                        |
-| `hackernews` | Hacker News front-page stories                   |
-| `reddit`     | Reddit r/popular post titles                     |
-| `local`      | Bundled `src/functions/search-queries.json` list |
-
-RSS feeds use a dotted path - `rss` for every feed, `rss.<site>` for a whole site, or `rss.<site>.<endpoint>` for a single feed:
-
-| Selector           | Feeds                                                          |
-| ------------------ | -------------------------------------------------------------- |
-| `rss.googleTrends` | Google Trends RSS (`gb`, `us`)                                 |
-| `rss.googleNews`   | Google News (`gb`, `us`, `world`, `technology`, `business`)    |
-| `rss.bbc`          | BBC News (`top`, `world`, `technology`, `business`, `science`) |
-| `rss.guardian`     | The Guardian (`international`, `world`, `technology`)          |
-| `rss.theVerge`     | The Verge (`all`)                                              |
-| `rss.arsTechnica`  | Ars Technica (`all`)                                           |
-| `rss.reddit`       | Reddit listing feeds (`popular`, `worldnews`, `technology`)    |
-
-Add your own feeds in `src/constants/rssFeeds.ts`.
-
-Default:
-
-```json
-[
-    "google",
-    "wikipedia",
-    "wikirandom",
-    "hackernews",
-    "reddit",
-    "local",
-    "rss.googleTrends",
-    "rss.googleNews",
-    "rss.bbc",
-    "rss.guardian.world",
-    "rss.theVerge.all"
-]
+```bash
+docker exec -e SKIP_RANDOM_SLEEP=true \
+  microsoft-rewards-script \
+  bash -c 'cd /usr/src/microsoft-rewards-script && npm start'
 ```
 
-### Experimental
-
-Opt-in features that may change. Disabled by default.
-
-| Setting                        | Type    | Default | Description                                                       | Docker environment variable              |
-| ------------------------------ | ------- | ------- | ----------------------------------------------------------------- | ---------------------------------------- |
-| `experimental.apiSearch`       | boolean | `false` | Perform Bing searches over HTTP instead of driving a browser page | `CONFIG_EXPERIMENTAL_API_SEARCH`         |
-| `experimental.apiSearchOnBing` | boolean | `false` | Complete ExploreOnBing offers over HTTP instead of the browser    | `CONFIG_EXPERIMENTAL_API_SEARCH_ON_BING` |
-
-> [!NOTE]
-> The API paths are faster but depend on the modern dashboard's endpoints. If an ExploreOnBing offer ever fails to be credited, turn `apiSearchOnBing` off to fall back to the browser path.
-
-### Logging
-
-| Setting                          | Type     | Default                | Description                       | Docker environment variable     |
-| -------------------------------- | -------- | ---------------------- | --------------------------------- | ------------------------------- |
-| `debugLogs`                      | boolean  | `false`                | Enable debug logging              | `CONFIG_DEBUG_LOGS`             |
-| `consoleLogFilter.enabled`       | boolean  | `false`                | Enable console log filtering      | `CONFIG_LOG_FILTER_ENABLED`     |
-| `consoleLogFilter.mode`          | string   | `"whitelist"`          | Filter mode (whitelist/blacklist) | `CONFIG_LOG_FILTER_MODE`        |
-| `consoleLogFilter.levels`        | string[] | `["error", "warn"]`    | Log levels to filter              | `CONFIG_LOG_FILTER_LEVELS` \*   |
-| `consoleLogFilter.keywords`      | string[] | `["starting account"]` | Keywords to filter                | `CONFIG_LOG_FILTER_KEYWORDS` \* |
-| `consoleLogFilter.regexPatterns` | string[] | `[]`                   | Regex patterns for filtering      |                                 |
-
-> [!NOTE]
-> \* Docker `CONFIG_*` array values are comma-separated strings e.g. `"error,warn"`. Regex patterns must be set directly in `config.json`.
-
-### Proxy
-
-| Setting             | Type    | Default | Description                 | Docker environment variable |
-| ------------------- | ------- | ------- | --------------------------- | --------------------------- |
-| `proxy.queryEngine` | boolean | `true`  | Proxy query engine requests | `CONFIG_PROXY_QUERY_ENGINE` |
-
-### Webhooks
-
-| Setting                                  | Type     | Default                                              | Description                       | Docker environment variable             |
-| ---------------------------------------- | -------- | ---------------------------------------------------- | --------------------------------- | --------------------------------------- |
-| `webhook.discord.enabled`                | boolean  | `false`                                              | Enable Discord webhook            | `CONFIG_DISCORD_ENABLED`                |
-| `webhook.discord.url`                    | string   | `""`                                                 | Discord webhook URL               | `CONFIG_DISCORD_URL`                    |
-| `webhook.telegram.enabled`               | string   | `""`                                                 | Enable Telegram webhook           | `CONFIG_TELEGRAM_ENABLED`               |
-| `webhook.telegram.botToken`              | string   | `""`                                                 | Telegram bot token                | `CONFIG_TELEGRAM_BOTTOKEN`              |
-| `webhook.telegram.chatId`                | string   | `""`                                                 | Telegram chat id                  | `CONFIG_TELEGRAM_CHATID`                |
-| `webhook.ntfy.enabled`                   | boolean  | `false`                                              | Enable ntfy notifications         | `CONFIG_NTFY_ENABLED`                   |
-| `webhook.ntfy.url`                       | string   | `""`                                                 | ntfy server URL                   | `CONFIG_NTFY_URL`                       |
-| `webhook.ntfy.topic`                     | string   | `""`                                                 | ntfy topic                        | `CONFIG_NTFY_TOPIC`                     |
-| `webhook.ntfy.token`                     | string   | `""`                                                 | ntfy authentication token         | `CONFIG_NTFY_TOKEN`                     |
-| `webhook.ntfy.title`                     | string   | `"Microsoft-Rewards-Script"`                         | Notification title                | `CONFIG_NTFY_TITLE`                     |
-| `webhook.ntfy.tags`                      | string[] | `["bot", "notify"]`                                  | Notification tags                 | `CONFIG_NTFY_TAGS` \*                   |
-| `webhook.ntfy.priority`                  | number   | `3`                                                  | Notification priority (1-5)       | `CONFIG_NTFY_PRIORITY`                  |
-| `webhook.webhookLogFilter.enabled`       | boolean  | `false`                                              | Enable webhook log filtering      | `CONFIG_WEBHOOK_LOG_FILTER_ENABLED`     |
-| `webhook.webhookLogFilter.mode`          | string   | `"whitelist"`                                        | Filter mode (whitelist/blacklist) | `CONFIG_WEBHOOK_LOG_FILTER_MODE`        |
-| `webhook.webhookLogFilter.levels`        | string[] | `["error"]`                                          | Log levels to send                | `CONFIG_WEBHOOK_LOG_FILTER_LEVELS` \*   |
-| `webhook.webhookLogFilter.keywords`      | string[] | `["starting account", "select number", "collected"]` | Keywords to filter                | `CONFIG_WEBHOOK_LOG_FILTER_KEYWORDS` \* |
-| `webhook.webhookLogFilter.regexPatterns` | string[] | `[]`                                                 | Regex patterns for filtering      |                                         |
-
-> [!NOTE]
-> \* Docker `CONFIG_*` array values are comma-separated strings e.g. `"error,warn"`. Regex patterns must be set directly in `config.json`.
-
-> [!WARNING]
-> **NTFY** users set the `webhookLogFilter` to `enabled`, or you will receive push notifications for _all_ logs.
-> When enabled, only account start, 2FA codes, and account completion summaries are delivered as push notifications.
-> Customize which notifications you receive with the `keywords` options.
+观察日志：正常流程为 `EMAIL_INPUT → 使用密码 → PASSWORD_INPUT → LOGGED_IN`，
+随后自动完成每日任务、阅读赚分、打卡、搜索等。
 
 ---
 
-## Troubleshooting
+## 5. 两步验证（2FA）配置
 
-> [!TIP]
-> Most login issues can be fixed by deleting your /sessions folder, and redeploying the script
+若 Microsoft 账户开启了两步验证：
+
+1. 在认证器 App 中查看该账户的 **Base32 密钥**（非 6 位动态码）
+2. 在 `.env` 中设置 `ACCOUNT_1_TOTP_SECRET=该密钥`
+3. 重启容器：`docker compose up -d`
+
+脚本会读取该密钥自动生成验证码，无需人工干预。
 
 ---
 
-## Disclaimer
+## 6. 守护与「服务器重启后自动运行」
 
-Use at your own risk.  
-Automation of Microsoft Rewards may lead to account suspension or bans.  
-This software is provided for educational purposes only.  
-The authors are not responsible for any actions taken by Microsoft.
+本方案已是标准守护，无需 PM2：
+
+- 容器 `restart: unless-stopped` → 容器异常退出会被 Docker 自动拉起
+- `docker` 服务开机自启（执行一次确认：`systemctl is-enabled docker`，应为 `enabled`）
+
+两者组合 = 服务器重启后 Docker 先起 → 自动拉起容器 → 容器内 cron 每天定时跑任务。
+**无需人工干预，也无需额外的 PM2 进程。**
+
+---
+
+## 7. 常见问题 / 踩坑记录
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| 构建卡在 apt / Chromium 下载 | 国内访问官方源极慢 | 已通过 `Dockerfile` 国内源修复；如仍慢，检查镜像是否生效 |
+| `docker ps` 显示 `(unhealthy)` | healthcheck 写成 `exit 1`（旧版 bug） | 改为 `pgrep cron > /dev/null \|\| exit 1` |
+| 日志长时间不刷新 | 仅为构建日志缓冲延迟，并非卡死 | 用 `docker stats` / 网速检测确认仍在下载 |
+| PC 搜索只完成部分、剩余 15 分没拿 | 服务器到 Bing 网络超时 | 脚本会自动重试；下次 cron 通常能补上 |
+| 积分统计 `Browser: 0` / `App: 35` | 账户区域为 `cn`，桌面搜索暂不可赚 | 正常现象，非配置错误 |
+| 容器启动后没立即跑任务 | `RUN_ON_START=false` | 改为 `true` 或等 cron 定时触发 |
+
+---
+
+## 8. 从上游同步更新
+
+本仓库 `README.md` 已在 `.gitattributes` 中设置 `merge=ours`，
+从上游合并时不会被英文原版覆盖。同步步骤：
+
+```bash
+git remote add upstream https://github.com/hex-ci/Microsoft-Rewards-Script.git
+git fetch upstream
+git merge upstream/v4
+```
+
+> 让 `merge=ours` 在本机生效，需注册一次 merge driver（一次即可）：
+> ```bash
+> git config merge.ours.name "keep ours"
+> git config merge.ours.driver "true"
+> ```
+
+---
+
+## 9. 配置选项速查
+
+完整英文配置项见上游 [Configuration Options](https://github.com/hex-ci/Microsoft-Rewards-Script#configuration-options)。
+常用项（通过 `compose.yaml` 的 `environment` 或 `config.json` 设置）：
+
+- `CRON_SCHEDULE`：cron 表达式，控制每天运行时间（容器时区由 `TZ` 决定）
+- `RUN_ON_START`：`true` 容器启动即运行一次；`false` 仅按 cron
+- `SKIP_RANDOM_SLEEP`：`false` 运行前随机等待 5~50 分钟
+- `ACCOUNT_N_EMAIL` / `ACCOUNT_N_PASSWORD` / `ACCOUNT_N_TOTP_SECRET`：多账户凭证
+- `CONFIG_CLUSTERS`：并发集群数
+- `CONFIG_ENSURE_STREAK_PROTECTION`：保护连续签到
+- `CONFIG_WORKER_*`：开关各类任务（每日任务、特殊活动、更多活动等）
+
+---
+
+*维护者：maojunzc · 基于 [hex-ci/Microsoft-Rewards-Script](https://github.com/hex-ci/Microsoft-Rewards-Script) v4*
