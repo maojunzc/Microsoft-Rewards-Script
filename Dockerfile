@@ -29,6 +29,16 @@ FROM node:24-slim AS runtime
 
 WORKDIR /usr/src/microsoft-rewards-script
 
+# === 国内构建加速（fork 维护者添加）===
+# 在中国大陆构建时，官方 deb.debian.org 与 playwright CDN 速度极慢（实测约 200KB/s，
+# 完整构建需 1 小时以上）。切换到清华 apt 镜像 + npmmirror 二进制镜像可大幅提速。
+# 如需回退官方源，删除下面 2 段（sed 行与 ENV 下载 host）即可，不影响运行期逻辑。
+RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list 2>/dev/null || true
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright \
+    PATCHRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+# === 国内构建加速结束 ===
+
 # Set production environment variables
 ENV NODE_ENV=production \
     TZ=UTC \

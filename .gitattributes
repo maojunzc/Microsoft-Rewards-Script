@@ -1,2 +1,6 @@
 *.sh text eol=lf
 *.template text eol=lf
+
+# fork 维护者中文部署清单：文本按 LF 存储，从上游合并时保留本仓库版本，不被覆盖
+README.CN.md text eol=lf merge=ours
+
